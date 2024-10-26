@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/elbert_crm?currentSchema=timesheet
+    username: postgres
+    password: Giridhar@123
+    driverClassName: org.postgresql.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: update
+  docker:
+    compose:
+      enabled: false
+  h2:
+    console:
+      enabled: true
+
+server:
+  port: 8082
+
+jwt:
+  secret: ruw9doanqRHQfsfSPS+uglAhi/Wd5Zpwg9knAd5UIQw=
+  expiration: 360000

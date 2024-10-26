@@ -1,20 +1,23 @@
 package com.ess.timesheet.infrastructure.domain.sql.service.impl;
 
 import com.ess.timesheet.core.api.TimesheetService;
-import com.ess.timesheet.core.dto.ApprovalWorkflowDTO;
-import com.ess.timesheet.core.dto.ProjectAndTaskDetailsDTO;
-import com.ess.timesheet.core.dto.TimeEntryDTO;
+
 import com.ess.timesheet.core.dto.TimesheetDTO;
-import com.ess.timesheet.infrastructure.domain.sql.model.ApprovalWorkflowEntity;
-import com.ess.timesheet.infrastructure.domain.sql.model.ProjectAndTaskDetailsEntity;
-import com.ess.timesheet.infrastructure.domain.sql.model.TimeEntryEntity;
+import com.ess.timesheet.core.exception.ResourceNotFoundException;
+import com.ess.timesheet.core.exception.TimesheetException;
+import com.ess.timesheet.core.req.RejectTimesheetRequest;
+import com.ess.timesheet.core.util.SubmissionStatus;
 import com.ess.timesheet.infrastructure.domain.sql.model.TimesheetEntity;
 import com.ess.timesheet.infrastructure.domain.sql.repository.TimesheetRepository;
+import com.ess.timesheet.infrastructure.domain.sql.service.handler.TimeSheetMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,183 +26,145 @@ public class TimesheetServiceImpl implements TimesheetService {
     @Autowired
     private TimesheetRepository timesheetRepository;
 
+    @Autowired
+    private TimeSheetMapper timeSheetMapper;
+
     @Override
-    public TimesheetDTO createTimesheet(TimesheetDTO timesheetDTO) {
-        TimesheetEntity timesheetEntity = toEntity(timesheetDTO);
-        TimesheetEntity savedTimesheet = timesheetRepository.save(timesheetEntity);
-        return toDTO(savedTimesheet);
+    public TimesheetDTO submitTimesheet(TimesheetDTO request) {
+        validateTimesheetHours(request);
+        TimesheetEntity entity = timeSheetMapper.toEntity(request);
+        entity.setStatus(SubmissionStatus.SUBMITTED);
+        entity.setSubmissionDate(LocalDate.now());
+
+        // Calculate total hours
+        int totalHours = request.getDailyHours().values().stream().mapToInt(Integer::intValue).sum();
+        entity.setTotalHours(totalHours); // Set the total hours in the entity
+
+        // Save to repository
+        TimesheetEntity savedEntity = timesheetRepository.save(entity);
+
+        // Map to DTO and return
+        return timeSheetMapper.toDto(savedEntity);
     }
+
+
+    @Override
+    public TimesheetDTO updateTimesheet(Long id, TimesheetDTO request) {
+        TimesheetEntity entity = findTimesheetById(id);
+        timeSheetMapper.updateEntity(entity, request);  // Ensure a mapper method for updating
+        return timeSheetMapper.toDto(timesheetRepository.save(entity));
+    }
+
+    @Override
+    public TimesheetDTO approveTimesheet(Long id, String approver) {
+        TimesheetEntity entity = findTimesheetById(id);
+        entity.setStatus(SubmissionStatus.APPROVED);
+        entity.setApprover(approver);
+        entity.setApprovalDate(LocalDate.now());
+        return timeSheetMapper.toDto(timesheetRepository.save(entity));
+    }
+
+    @Override
+    public TimesheetDTO rejectTimesheet(Long id, String approver, String reason) {
+        TimesheetEntity entity = findTimesheetById(id);
+        entity.setStatus(SubmissionStatus.REJECTED);
+        entity.setRejectionReason(reason);
+        entity.setApprover(approver);
+        return timeSheetMapper.toDto(timesheetRepository.save(entity));
+    }
+
+    @Override
+    public TimesheetDTO resubmitTimesheet(Long id, TimesheetDTO request) {
+        TimesheetEntity entity = findTimesheetById(id);
+
+        // Update the entity's fields based on the request
+        timeSheetMapper.updateEntity(entity, request);
+
+        // Recalculate total hours
+        int totalHours = request.getDailyHours().values().stream().mapToInt(Integer::intValue).sum();
+        entity.setTotalHours(totalHours); // Update total hours
+
+        // Update the status to SUBMITTED and clear any rejection reason if applicable
+        entity.setStatus(SubmissionStatus.SUBMITTED);
+        entity.setRejectionReason(null); // Clear rejection reason on resubmission
+        entity.setSubmissionDate(LocalDate.now()); // Update submission date
+
+        // Save the updated entity to the repository
+        return timeSheetMapper.toDto(timesheetRepository.save(entity));
+    }
+
+
+    @Override
+    public List<TimesheetDTO> getEmployeeTimesheets(Long employeeId) {
+        return timesheetRepository.findByEmployeeId(employeeId).stream()
+                .map(timeSheetMapper::toDto)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<TimesheetDTO> getTimesheetsForApproval() {
+        List<TimesheetEntity> entities = timesheetRepository.findByStatus(SubmissionStatus.SUBMITTED);
+        System.out.println("Fetched entities: " + entities);
+        return entities.stream()
+                .map(entity -> {
+                    TimesheetDTO dto = timeSheetMapper.toDto(entity);
+                    System.out.println("Mapped DTO: " + dto);
+                    return dto;
+                })
+                .collect(Collectors.toList());
+    }
+
 
     @Override
     public TimesheetDTO getTimesheetById(Long id) {
-        TimesheetEntity timesheet = timesheetRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Timesheet not found"));
-        return toDTO(timesheet);
+        return timeSheetMapper.toDto(findTimesheetById(id));
     }
 
     @Override
-    public TimesheetDTO updateTimesheet(Long id, TimesheetDTO timesheetDTO) {
-        TimesheetEntity existingTimesheet = timesheetRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Timesheet not found"));
-
-        existingTimesheet.setEmployeeName(timesheetDTO.getEmployeeName());
-        existingTimesheet.setEmployeeId(timesheetDTO.getEmployeeId());
-        existingTimesheet.setDepartment(timesheetDTO.getDepartment());
-        existingTimesheet.setPeriod(timesheetDTO.getPeriod());
-
-        if (timesheetDTO.getTimeEntryDTOList() != null) {
-            List<TimeEntryEntity> timeEntryEntities = new ArrayList<>();
-            for (TimeEntryDTO timeEntryDTO : timesheetDTO.getTimeEntryDTOList()) {
-                TimeEntryEntity timeEntryEntity = toTimeEntryEntity(timeEntryDTO);
-                timeEntryEntity.setTimesheet(existingTimesheet);  // Set parent relationship
-                timeEntryEntities.add(timeEntryEntity);
-            }
-            existingTimesheet.setTimeEntries(timeEntryEntities);
-        }
-
-        if (timesheetDTO.getProjectAndTaskDetailsDTO() != null) {
-            existingTimesheet.setProjectAndTaskDetails(toProjectAndTaskDetailsEntity(timesheetDTO.getProjectAndTaskDetailsDTO()));
-        }
-
-        if (timesheetDTO.getApprovalWorkflowDTO() != null) {
-            existingTimesheet.setApprovalWorkflow(toApprovalWorkflowEntity(timesheetDTO.getApprovalWorkflowDTO()));
-        }
-
-        TimesheetEntity updatedTimesheet = timesheetRepository.save(existingTimesheet);
-        return toDTO(updatedTimesheet);
+    public Map<String, Integer> getDefaultHours() {
+        return Map.of(
+                "MONDAY", 8,
+                "TUESDAY", 8,
+                "WEDNESDAY", 8,
+                "THURSDAY", 8,
+                "FRIDAY", 8
+        );
     }
 
     @Override
-    public List<TimesheetDTO> getAllTimesheets() {
-        List<TimesheetEntity> timesheets = timesheetRepository.findAll();
-        List<TimesheetDTO> timesheetDTOList = new ArrayList<>();
-        for (TimesheetEntity entity : timesheets) {
-            timesheetDTOList.add(toDTO(entity));
+    public List<String> getStatusOptions() {
+        return List.of("DRAFT", "SUBMITTED", "APPROVED", "REJECTED");
+    }
+
+    private TimesheetEntity findTimesheetById(Long id) {
+        return timesheetRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Timesheet not found with id: " + id));
+    }
+
+    private void validateTimesheetHours(TimesheetDTO request) {
+        int totalHours = request.getDailyHours().values().stream().mapToInt(Integer::intValue).sum();
+        if (totalHours != 40) {
+            throw new IllegalArgumentException("Total weekly hours must be exactly 40. Your total: " + totalHours);
         }
-        return timesheetDTOList;
     }
 
     @Override
-    public void deleteTimesheet(Long id) {
-        TimesheetEntity timesheet = timesheetRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Timesheet not found"));
-        timesheetRepository.delete(timesheet);
+    public TimesheetDTO rejectTimesheet(Long id, RejectTimesheetRequest request) {
+        TimesheetEntity entity = findTimesheetById(id);
+        entity.setStatus(SubmissionStatus.REJECTED);
+        entity.setRejectionReason(request.getRejectionReason());
+        entity.setApprover(request.getApprover());
+        return timeSheetMapper.toDto(timesheetRepository.save(entity));
     }
 
-    // Conversion methods
-    private TimesheetDTO toDTO(TimesheetEntity entity) {
-        TimesheetDTO dto = new TimesheetDTO();
-        dto.setTimesheetId(entity.getTimesheetId());
-        dto.setEmployeeName(entity.getEmployeeName());
-        dto.setEmployeeId(entity.getEmployeeId());
-        dto.setDepartment(entity.getDepartment());
-        dto.setPeriod(entity.getPeriod());
+//    @Override
+//    public List<TimesheetDTO> getTimesheetsByStatus(SubmissionStatus submissionStatus) {
+//        List<TimesheetEntity> timesheets = timesheetRepository.findByStatus(submissionStatus);
+//        // Convert timesheets from entity to DTO
+//        return convertToDTO(timesheets);
+//    }
 
-        if (entity.getTimeEntries() != null) {
-            List<TimeEntryDTO> timeEntryDTOList = new ArrayList<>();
-            for (TimeEntryEntity timeEntry : entity.getTimeEntries()) {
-                timeEntryDTOList.add(toTimeEntryDTO(timeEntry));
-            }
-            dto.setTimeEntryDTOList(timeEntryDTOList);
-        }
 
-        if (entity.getProjectAndTaskDetails() != null) {
-            dto.setProjectAndTaskDetailsDTO(toProjectAndTaskDetailsDTO(entity.getProjectAndTaskDetails()));
-        }
-
-        if (entity.getApprovalWorkflow() != null) {
-            dto.setApprovalWorkflowDTO(toApprovalWorkflowDTO(entity.getApprovalWorkflow()));
-        }
-
-        return dto;
-    }
-
-    private TimesheetEntity toEntity(TimesheetDTO dto) {
-        TimesheetEntity entity = new TimesheetEntity();
-        entity.setEmployeeName(dto.getEmployeeName());
-        entity.setEmployeeId(dto.getEmployeeId());
-        entity.setDepartment(dto.getDepartment());
-        entity.setPeriod(dto.getPeriod());
-
-        // Ensure child entities are properly set
-        if (dto.getApprovalWorkflowDTO() != null) {
-            entity.setApprovalWorkflow(toApprovalWorkflowEntity(dto.getApprovalWorkflowDTO()));
-        }
-
-        if (dto.getProjectAndTaskDetailsDTO() != null) {
-            entity.setProjectAndTaskDetails(toProjectAndTaskDetailsEntity(dto.getProjectAndTaskDetailsDTO()));
-        }
-
-        if (dto.getTimeEntryDTOList() != null) {
-            List<TimeEntryEntity> timeEntryEntities = dto.getTimeEntryDTOList()
-                    .stream()
-                    .map(this::toTimeEntryEntity)
-                    .collect(Collectors.toList());
-            entity.setTimeEntries(timeEntryEntities);
-        }
-
-        return entity;
-    }
-
-    private TimeEntryDTO toTimeEntryDTO(TimeEntryEntity entity) {
-        TimeEntryDTO dto = new TimeEntryDTO();
-        dto.setDate(entity.getDate());
-        dto.setStartTime(entity.getStartTime());
-        dto.setEndTime(entity.getEndTime());
-        dto.setTotalHours(entity.getTotalHours());
-        dto.setBreaks(entity.getBreaks());
-        dto.setBillable(entity.getBillable());
-        return dto;
-    }
-
-    private TimeEntryEntity toTimeEntryEntity(TimeEntryDTO dto) {
-        TimeEntryEntity entity = new TimeEntryEntity();
-        entity.setDate(dto.getDate());
-        entity.setStartTime(dto.getStartTime());
-        entity.setEndTime(dto.getEndTime());
-        entity.setTotalHours(dto.getTotalHours());
-        entity.setBreaks(dto.getBreaks());
-        entity.setBillable(dto.getBillable());
-        return entity;
-    }
-
-    private ProjectAndTaskDetailsDTO toProjectAndTaskDetailsDTO(ProjectAndTaskDetailsEntity entity) {
-        ProjectAndTaskDetailsDTO dto = new ProjectAndTaskDetailsDTO();
-        dto.setProjectId(entity.getProjectId());
-        dto.setProjectName(entity.getProjectName());
-        dto.setTaskName(entity.getTaskName());
-        dto.setTaskId(entity.getTaskId());
-        dto.setDescription(entity.getDescription());
-        return dto;
-    }
-
-    private ProjectAndTaskDetailsEntity toProjectAndTaskDetailsEntity(ProjectAndTaskDetailsDTO dto) {
-        ProjectAndTaskDetailsEntity entity = new ProjectAndTaskDetailsEntity();
-        entity.setProjectId(dto.getProjectId());
-        entity.setProjectName(dto.getProjectName());
-        entity.setTaskName(dto.getTaskName());
-        entity.setTaskId(dto.getTaskId());
-        entity.setDescription(dto.getDescription());
-        return entity;
-    }
-
-    private ApprovalWorkflowDTO toApprovalWorkflowDTO(ApprovalWorkflowEntity entity) {
-        ApprovalWorkflowDTO dto = new ApprovalWorkflowDTO();
-        dto.setSubmissionDate(entity.getSubmissionDate());
-        dto.setSubmissionStatus(entity.getSubmissionStatus());
-        dto.setApprovalDate(entity.getApprovalDate());
-        dto.setApproval(entity.getApproval());
-        dto.setRejectionReason(entity.getRejectionReason());
-        return dto;
-    }
-
-    private ApprovalWorkflowEntity toApprovalWorkflowEntity(ApprovalWorkflowDTO dto) {
-        ApprovalWorkflowEntity entity = new ApprovalWorkflowEntity();
-        entity.setSubmissionDate(dto.getSubmissionDate());
-        entity.setSubmissionStatus(dto.getSubmissionStatus());
-        entity.setApprovalDate(dto.getApprovalDate());
-        entity.setApproval(dto.getApproval());
-        entity.setRejectionReason(dto.getRejectionReason());
-        return entity;
-    }
 }
+
+

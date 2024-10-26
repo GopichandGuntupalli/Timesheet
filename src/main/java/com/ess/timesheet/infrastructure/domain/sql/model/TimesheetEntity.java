@@ -1,53 +1,64 @@
 package com.ess.timesheet.infrastructure.domain.sql.model;
 
+import com.ess.timesheet.core.util.SubmissionStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
 
 @Entity
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Table(name = "TIMESHEET")
-
 public class TimesheetEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "TS_TIMESHEET_ID")
-    private Long timesheetId;
+    private Long id;
 
-    @Column(name = "TS_EMPLOYEE_NAME")
-    private String employeeName;
-
-    @Column(name = "TS_EMPLOYEE_ID")
     private Long employeeId;
+    private String employeeName;
+    private LocalDate periodStart;
+    private LocalDate periodEnd;
 
-    @Column(name = "TS_DEPARTMENT")
-    private String department;
+    @ElementCollection
+    @CollectionTable(name = "DAILY_HOURS", joinColumns = @JoinColumn(name = "timesheet_id"))
+    @MapKeyColumn(name = "day_of_week")
+    private Map<DayOfWeek, Integer> dailyHours = new HashMap<>();
 
-    @Column(name = "TS_PERIOD")
-    private String period;
+    private String projectId;
+    private String assignmentId;
 
-    @OneToOne(cascade = CascadeType.ALL, orphanRemoval = true)
-    @JoinColumn(name = "approval_workflow_id")
-    private ApprovalWorkflowEntity approvalWorkflow;
+    @Enumerated(EnumType.STRING)
+    private SubmissionStatus status;
 
-    @OneToOne(cascade = CascadeType.ALL, orphanRemoval = true)
-    @JoinColumn(name = "project_and_task_details_id")
-    private ProjectAndTaskDetailsEntity projectAndTaskDetails;
+    private LocalDate submissionDate; // Date of timesheet submission
+    private LocalDate approvalDate; // Date of timesheet approval
+    private String approver; // Name of the approver
+    private String rejectionReason; // Reason for rejection
 
-    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
-    @JoinColumn(name = "timesheet_id")
-    private List<TimeEntryEntity> timeEntries;
+    private Integer totalHours; // Total hours for the timesheet period
 
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt; // Timestamp for creation
 
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt; // Timestamp for last update
 
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
 }
-
-
-
